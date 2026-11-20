@@ -1,0 +1,8 @@
+node_modules/
+edge-profile/
+zips/
+migration.json
+migration.json.tmp
+running.lock
+*.zip
+*.zip.partial
