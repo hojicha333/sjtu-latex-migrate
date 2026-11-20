@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { chromium } from 'playwright';
-import { createDesktopPrompt, migrate } from './migrate.mjs';
+import { createDesktopPrompt, migrate, openMigrationContext } from './migrate.mjs';
 
 const fixture = Buffer.from('UEsDBBQAAAAAALqadF02ZYwxOwAAADsAAAAIAAAAbWFpbi50ZXhcZG9jdW1lbnRjbGFzc3thcnRpY2xlfQpcYmVnaW57ZG9jdW1lbnR9VGVzdFxlbmR7ZG9jdW1lbnR9ClBLAQIUABQAAAAAALqadF02ZYwxOwAAADsAAAAIAAAAAAAAAAAAAACAAQAAAABtYWluLnRleFBLBQYAAAAAAQABADYAAABhAAAAAAA=', 'base64');
 const name = '迁移样例 (Copy)';
@@ -16,10 +16,23 @@ const clashId = '4'.repeat(24);
 let imports = 0;
 let downloads = 0;
 let importedName = '';
+let requireLogin = false;
 
 const row = (id, title, download = false) => `<tr><td><a href="/project/${id}">${title}</a></td>${download ? `<td><button aria-label="下载 ZIP 格式文件" onclick="location.href='/download'">ZIP</button></td>` : ''}</tr>`;
 function sendPage(response, html) {
   response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(html);
+}
+
+function redirectForLogin(request, response, cookie) {
+  if (!requireLogin || request.headers.cookie?.includes(`${cookie}=yes`)) return false;
+  if (request.url === '/grant') {
+    response.writeHead(302, { 'Set-Cookie': `${cookie}=yes; Path=/; HttpOnly`, Location: '/project' }).end();
+  } else if (request.url === '/login') {
+    sendPage(response, '<a href="/grant">Complete mock login</a>');
+  } else {
+    response.writeHead(302, { Location: '/login' }).end();
+  }
+  return true;
 }
 
 async function serve(handler) {
@@ -29,6 +42,7 @@ async function serve(handler) {
 }
 
 const old = await serve((request, response) => {
+  if (redirectForLogin(request, response, 'mock_source')) return;
   if (request.url === '/download') {
     downloads++;
     response.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename=project.zip' }).end(fixture);
@@ -38,6 +52,7 @@ const old = await serve((request, response) => {
 });
 
 const target = await serve(async (request, response) => {
+  if (redirectForLogin(request, response, 'mock_target')) return;
   if (request.url === '/upload') {
     imports++;
     const parts = [];
@@ -85,6 +100,48 @@ try {
   const state = JSON.parse(await readFile(join(data, 'migration.json'), 'utf8'));
   assert.equal(state.projects[originalId].targetId, targetId);
   assert.equal(state.projects[originalId].status, 'imported');
+
+  requireLogin = true;
+  importedName = '';
+  const backgroundData = join(data, 'background');
+  await mkdir(backgroundData);
+  const sites = [old.url, target.url];
+  const requestedModes = [];
+  let activeContext;
+  const backgroundPrompt = {
+    async question() {
+      assert.equal(requestedModes.at(-1), false);
+      await activeContext.pages()[0].getByRole('link', { name: 'Complete mock login' }).click();
+    },
+    selectProjects: async () => [0],
+  };
+  const background = await openMigrationContext(async headless => {
+    requestedModes.push(headless);
+    // The test substitutes headless contexts for visible windows while exercising real session cookies.
+    activeContext = await browser.newContext({ acceptDownloads: true });
+    return activeContext;
+  }, backgroundPrompt, sites);
+  let loggedInState;
+  try {
+    assert.deepEqual(requestedModes, [true, false, true]);
+    assert.equal(await migrate(background, backgroundPrompt, backgroundData, { project: [] }, ...sites), 0);
+    assert.equal(downloads, 1);
+    assert.equal(imports, 2);
+    const result = JSON.parse(await readFile(join(backgroundData, 'migration.json'), 'utf8'));
+    assert.deepEqual(await readFile(result.projects[originalId].archive), fixture);
+    assert.equal(result.projects[originalId].status, 'imported');
+    loggedInState = await background.storageState();
+  } finally {
+    await background.close();
+  }
+
+  const reusedModes = [];
+  const reusedContext = await openMigrationContext(headless => {
+    reusedModes.push(headless);
+    return browser.newContext({ storageState: loggedInState });
+  }, { question: () => { throw new Error('Valid session unexpectedly required login'); } }, sites);
+  await reusedContext.close();
+  assert.deepEqual(reusedModes, [true]);
 
   const input = new PassThrough();
   let canceled = false;

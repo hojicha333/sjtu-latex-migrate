@@ -302,7 +302,7 @@ internal sealed class MigrationWindow : Form
         stopRequested = false;
         projects.Items.Clear();
         output.Clear();
-        status.Text = "正在准备工具并打开 Edge…";
+        status.Text = "正在后台连接新旧站点…";
         UpdateControls();
         try
         {

@@ -47,14 +47,55 @@ async function waitForList(page, url) {
   if (page.url().replace(/\/$/, '') !== url) throw new Error('请打开预期的项目列表。');
 }
 
-async function signIn(page, url, prompt) {
-  await page.goto(url, { waitUntil: 'domcontentloaded' });
+async function openProjectList(page, url) {
+  if (page.url().replace(/\/$/, '') !== url) await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await waitForList(page, url);
+}
+
+async function checkLogin(page, url) {
+  const response = await page.goto(url, { waitUntil: 'domcontentloaded' });
+  if (page.url().replace(/\/$/, '') !== url || [401, 403].includes(response?.status())) return false;
+  await waitForList(page, url);
+  return true;
+}
+
+export async function openMigrationContext(launch, prompt, urls) {
+  let context = await launch(true);
   try {
-    await waitForList(page, url);
-  } catch {
-    await page.bringToFront();
-    await prompt.question(`请在工具打开的 Edge 中完成 ${new URL(url).hostname} 的 jAccount 登录，看到项目列表后按 Enter。`);
-    await waitForList(page, url);
+    const probe = context.pages()[0] ?? await context.newPage();
+    const signInRequired = [];
+    for (const url of urls) {
+      if (!await checkLogin(probe, url)) signInRequired.push(url);
+    }
+    if (!signInRequired.length) return context;
+
+    const originalSession = await context.storageState({ indexedDB: true });
+    await context.close();
+    context = await launch(false);
+    await context.setStorageState(originalSession);
+    const login = context.pages()[0] ?? await context.newPage();
+    for (const url of signInRequired) {
+      if (await checkLogin(login, url)) continue;
+      await login.bringToFront();
+      await prompt.question(`请在工具打开的 Edge 中完成 ${new URL(url).hostname} 的 jAccount 登录，看到项目列表后按 Enter。`);
+      await waitForList(login, url);
+    }
+
+    // Session cookies may disappear when the visible browser closes. Transfer them in memory.
+    const signedInSession = await context.storageState({ indexedDB: true });
+    await context.close();
+    context = await launch(true);
+    await context.setStorageState(signedInSession);
+    const verify = context.pages()[0] ?? await context.newPage();
+    for (const url of urls) {
+      if (!await checkLogin(verify, url)) {
+        throw new Error(`${new URL(url).hostname} 的登录未延续到后台，请重新运行并登录。`);
+      }
+    }
+    return context;
+  } catch (error) {
+    await context.close().catch(() => {});
+    throw error;
   }
 }
 
@@ -148,7 +189,7 @@ function saveState(path, state) {
 
 export async function migrate(context, prompt, folder, options, from = sourceUrl, to = targetUrl) {
   const old = context.pages()[0] ?? await context.newPage();
-  await signIn(old, from, prompt);
+  await openProjectList(old, from);
   const owned = old.locator(listRoot).getByRole('button', { name: ownedProjects });
   if (await owned.count()) {
     await owned.click();
@@ -167,7 +208,7 @@ export async function migrate(context, prompt, folder, options, from = sourceUrl
   if (options.list || !selected.length) return 0;
 
   const reader = await context.newPage();
-  await signIn(reader, to, prompt);
+  await openProjectList(reader, to);
   const uploader = await context.newPage();
   const statePath = join(folder, 'migration.json');
   const state = await readState(statePath, from, to);
@@ -237,7 +278,6 @@ export async function migrate(context, prompt, folder, options, from = sourceUrl
     await saveState(statePath, state);
     await uploader.goto(to, { waitUntil: 'domcontentloaded' });
     await waitForList(uploader, to);
-    await uploader.bringToFront();
     state.projects[project.id].status = 'uploading';
     await saveState(statePath, state);
     console.log(`${label} — 正在上传…`);
@@ -327,10 +367,16 @@ async function main() {
   });
   const prompt = desktop || createTerminalInterface({ input: process.stdin, output: process.stdout });
   try {
-    context = await chromium.launchPersistentContext(join(folder, 'edge-profile'), {
-      channel: 'msedge', headless: false, acceptDownloads: true, viewport: null,
-    });
-    if (desktop?.canceled) throw new Error('迁移已停止。');
+    const launch = async headless => {
+      if (desktop?.canceled) throw new Error('迁移已停止。');
+      context = await chromium.launchPersistentContext(join(folder, 'edge-profile'), {
+        channel: 'msedge', headless, acceptDownloads: true,
+        viewport: headless ? { width: 1440, height: 900 } : null,
+      });
+      if (desktop?.canceled) throw new Error('迁移已停止。');
+      return context;
+    };
+    await openMigrationContext(launch, prompt, options.list ? [sourceUrl] : [sourceUrl, targetUrl]);
     return await migrate(context, prompt, folder, options);
   } catch (error) {
     if (desktop?.canceled) throw new Error('迁移已停止。');
