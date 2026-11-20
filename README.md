@@ -4,7 +4,7 @@
 
 ## Windows 图形版
 
-1. 在装有 Microsoft Edge 的 64 位 Windows 10 或 11 上，[下载 Windows 后台版 EXE](https://github.com/hojicha333/sjtu-latex-migrate/releases/download/v1.0.0/SJTU-LaTeX-Migration-win-x64-background.exe) 并双击打开。EXE 已内置 Node.js 和 Playwright，使用电脑上已有的 Edge，无需安装浏览器扩展。
+1. 在装有 Microsoft Edge 的 64 位 Windows 10 或 11 上，[下载 Windows EXE](https://github.com/hojicha333/sjtu-latex-migrate/releases/download/v1.0.0/SJTU-LaTeX-Migration-win-x64.exe) 并双击打开。EXE 已内置 Node.js 和 Playwright，使用电脑上已有的 Edge，无需安装浏览器扩展。
 2. 如已有旧站备份，先点「选择 ZIP 目录」，选中包含各个项目 ZIP 的文件夹。否则直接点「读取项目」。
 3. 如果工具弹出 Edge，请用同一个交大账号登录所提示的站点。看到项目列表后，回到迁移窗口点「登录完成」。两站登录有效后，工具会自动关闭弹出的 Edge 窗口。
 4. 勾选项目后点「迁移所选项目」。下载和上传均在后台运行，可在「迁移记录」查看结果，或点「打开备份目录」查看本机备份。
@@ -34,6 +34,6 @@ ZIP 会带上项目源文件和附件。编辑历史、协作邀请与编译设�
 在 Windows x64 上安装 Node.js 20+ 后，在 PowerShell 运行 `./desktop/Build.ps1`。构建会打包 Node.js、锁定版本的 Playwright 和迁移代码，输出到 `dist/`。可用以下命令运行本地模拟测试。
 
 ```powershell
-$test = Start-Process .\dist\SJTU-LaTeX-Migration-win-x64-background.exe -ArgumentList '--self-test' -Wait -PassThru
+$test = Start-Process .\dist\SJTU-LaTeX-Migration-win-x64.exe -ArgumentList '--self-test' -Wait -PassThru
 $test.ExitCode
 ```

@@ -31,7 +31,7 @@ try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $payload = Join-Path $buildRoot 'runtime.zip'
     [IO.Compression.ZipFile]::CreateFromDirectory($runtime, $payload, [IO.Compression.CompressionLevel]::Optimal, $false)
-    $exe = Join-Path $output 'SJTU-LaTeX-Migration-win-x64-background.exe'
+    $exe = Join-Path $output 'SJTU-LaTeX-Migration-win-x64.exe'
     & $compiler /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
         '/reference:System.Drawing.dll,System.Windows.Forms.dll,System.Web.Extensions.dll,System.IO.Compression.dll,System.IO.Compression.FileSystem.dll' `
         "/resource:$payload,SJTULaTeX.Runtime.zip" "/out:$exe" (Join-Path $PSScriptRoot 'Program.cs')
