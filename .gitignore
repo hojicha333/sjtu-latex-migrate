@@ -6,3 +6,4 @@ migration.json.tmp
 running.lock
 *.zip
 *.zip.partial
+/dist/

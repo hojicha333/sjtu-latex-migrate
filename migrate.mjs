@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { createInterface } from 'node:readline/promises';
+import { createInterface } from 'node:readline';
+import { createInterface as createTerminalInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
@@ -155,7 +156,10 @@ export async function migrate(context, prompt, folder, options, from = sourceUrl
     throw new Error('找不到旧站的「您的项目」筛选，无法核对项目拥有者。');
   }
   const sources = await readProjects(old, from);
-  const selected = options.project.length ? sources.filter(p => options.project.includes(p.name)) : sources;
+  const picked = prompt.selectProjects ? await prompt.selectProjects(sources.map(project => project.name)) : null;
+  const selected = picked === null
+    ? (options.project.length ? sources.filter(p => options.project.includes(p.name)) : sources)
+    : sources.filter((_, index) => picked.includes(index));
   const missing = options.project.filter(name => !selected.some(p => p.name === name));
   if (missing.length) throw new Error(`找不到项目：${missing.join('、')}`);
   console.log(`旧站自己的项目，共 ${selected.length} 个：`);
@@ -170,7 +174,7 @@ export async function migrate(context, prompt, folder, options, from = sourceUrl
   const duplicates = selected.filter(p => sources.filter(other => other.name === p.name).length > 1);
   if (duplicates.length) console.log('旧站同名项目需要在网页上手动迁移。');
 
-  if (!options.yes) {
+  if (!options.yes && picked === null) {
     const answer = await prompt.question(`将上述项目的 ZIP 上传到 ${new URL(to).hostname}。输入 y 开始：`);
     if (answer.trim().toLowerCase() !== 'y') return 0;
   }
@@ -252,6 +256,47 @@ export async function migrate(context, prompt, folder, options, from = sourceUrl
   return verified === selected.length ? 0 : 1;
 }
 
+export function createDesktopPrompt(input, write, cancel) {
+  const lines = createInterface({ input });
+  let reply;
+  let canceled = false;
+  const stop = () => {
+    if (canceled) return;
+    canceled = true;
+    if (reply) reply.reject(new Error('迁移已停止。'));
+    reply = undefined;
+    cancel();
+  };
+  lines.on('line', line => {
+    let message;
+    try { message = JSON.parse(line); } catch { return; }
+    if (message?.cancel) {
+      stop();
+    } else if (reply) {
+      const pending = reply;
+      reply = undefined;
+      pending.resolve(message?.reply);
+    }
+  });
+  lines.on('close', stop);
+
+  const request = message => new Promise((resolveReply, reject) => {
+    if (canceled) { reject(new Error('迁移已停止。')); return; }
+    reply = { resolve: resolveReply, reject };
+    write(`@@SJTU_UI@@${JSON.stringify(message)}`);
+  });
+  return {
+    question: message => request({ kind: 'login', message: message.replace('按 Enter。', '点「登录完成」。') }),
+    async selectProjects(names) {
+      if (!names.length) return [];
+      const selected = await request({ kind: 'projects', names });
+      return Array.isArray(selected) ? selected.filter(index => Number.isInteger(index)) : [];
+    },
+    close() { lines.off('close', stop); lines.close(); },
+    get canceled() { return canceled; },
+  };
+}
+
 async function main() {
   const { values: options } = parseArgs({ options: {
     help: { type: 'boolean', short: 'h' },
@@ -261,6 +306,7 @@ async function main() {
     'retry-pending': { type: 'boolean' },
     'zip-dir': { type: 'string' },
     'data-dir': { type: 'string' },
+    gui: { type: 'boolean' },
   } });
   if (options.help) {
     console.log('Start-Migration.cmd [--list] [--project "项目名"] [--zip-dir "ZIP 目录"] [--yes] [--retry-pending] [--data-dir "路径"]');
@@ -275,13 +321,20 @@ async function main() {
     throw error;
   });
 
-  const prompt = createInterface({ input: process.stdin, output: process.stdout });
   let context;
+  const desktop = options.gui && createDesktopPrompt(process.stdin, console.log, () => {
+    void context?.close().catch(() => {});
+  });
+  const prompt = desktop || createTerminalInterface({ input: process.stdin, output: process.stdout });
   try {
     context = await chromium.launchPersistentContext(join(folder, 'edge-profile'), {
       channel: 'msedge', headless: false, acceptDownloads: true, viewport: null,
     });
+    if (desktop?.canceled) throw new Error('迁移已停止。');
     return await migrate(context, prompt, folder, options);
+  } catch (error) {
+    if (desktop?.canceled) throw new Error('迁移已停止。');
+    throw error;
   } finally {
     prompt.close();
     try {
